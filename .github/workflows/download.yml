@@ -1,4 +1,4 @@
-name: Download Files and Commit (LFS)
+name: Download Files and Commit (Split 50MB)
 
 on:
   workflow_dispatch:
@@ -15,12 +15,6 @@ jobs:
         fetch-depth: 0
         ref: ${{ github.ref }}
 
-    - name: Install Git LFS
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y git-lfs
-        git lfs install
-
     - name: Read list.txt into output
       id: read_urls
       run: |
@@ -36,26 +30,45 @@ jobs:
       id: timestamp
       run: |
         TS=$(date -u +"%Y%m%d%H%M")
-        echo "Using timestamp: $TS"
         echo "folder=$TS" >> $GITHUB_OUTPUT
 
-    - name: Create dynamic download directory
-      run: |
-        mkdir -p download/${{ steps.timestamp.outputs.folder }}
+    - name: Create timestamped download directory
+      run: mkdir -p download/${{ steps.timestamp.outputs.folder }}
 
-    - name: Download each file (non-fatal)
+    - name: Download + Compress + Split Files
       run: |
         cd download/${{ steps.timestamp.outputs.folder }}
+
         while read -r url; do
           [ -z "$url" ] && continue
-          echo "Downloading: $url"
+
           fname=$(basename "$url")
+          base="${fname%.*}"
+
+          echo "Downloading $fname"
           if curl -L --fail -o "$fname" "$url"; then
-            echo "Success: $fname"
+            echo "Download ok: $fname"
           else
-            echo "FAILED: $url — skipping"
+            echo "FAILED: $url"
             rm -f "$fname"
+            continue
           fi
+
+          # Make folder for the file
+          mkdir -p "$base"
+
+          echo "Compressing $fname..."
+          tar -czf "$base/$fname.tar.gz" "$fname"
+
+          echo "Splitting into 50MB chunks..."
+          split -b 50m "$base/$fname.tar.gz" "$base/${fname}.part_"
+
+          echo "Cleaning up original compressed file..."
+          rm "$base/$fname.tar.gz"
+          rm "$fname"
+
+          echo "Done with: $fname"
+
         done <<< "${{ steps.read_urls.outputs.urls }}"
 
     - name: Remove old timestamp folders
@@ -63,30 +76,20 @@ jobs:
         cd download
         newest="${{ steps.timestamp.outputs.folder }}"
         echo "Keeping only: $newest"
-
         for dir in */; do
           d="${dir%/}"
           if [ "$d" != "$newest" ]; then
-            echo "Deleting old folder: $d"
+            echo "Deleting old: $d"
             rm -rf "$d"
           fi
         done
 
-    - name: Track downloads with Git LFS
-      run: |
-        git lfs track "download/**"
-        echo "Updated .gitattributes:"
-        cat .gitattributes || true
-        git add .gitattributes
-
-    - name: Commit downloaded files to repo
+    - name: Commit split files
       if: ${{ github.event_name == 'workflow_dispatch' }}
       run: |
         set -e
         git config user.name "github-actions"
         git config user.email "github-actions@github.com"
-
-        echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
 
         git add download
 
@@ -96,6 +99,5 @@ jobs:
         fi
 
         git pull --rebase --autostash
-
-        git commit -m "Add downloads for ${{ steps.timestamp.outputs.folder }} (via Git LFS)"
+        git commit -m "Add split 50MB downloads for ${{ steps.timestamp.outputs.folder }}"
         git push
