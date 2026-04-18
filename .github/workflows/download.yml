@@ -1,4 +1,4 @@
-name: Download Files and Create Release
+name: Download Files and Commit
 
 on:
   workflow_dispatch:
@@ -8,53 +8,73 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read list.txt into output
-        id: read_urls
-        run: |
-          if [ ! -f list.txt ]; then
-            echo "list.txt NOT found!"
-            exit 1
+    - name: Read list.txt into output
+      id: read_urls
+      run: |
+        if [ ! -f list.txt ]; then
+          echo "list.txt NOT found!"
+          exit 1
+        fi
+        echo "urls<<EOF" >> $GITHUB_OUTPUT
+        cat list.txt >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Generate timestamp folder name
+      id: timestamp
+      run: |
+        TS=$(date -u +"%Y%m%d%H%M")
+        echo "folder=$TS" >> $GITHUB_OUTPUT
+
+    - name: Create dynamic download directory
+      run: |
+        mkdir -p download/${{ steps.timestamp.outputs.folder }}
+
+    - name: Download each file (non-fatal)
+      run: |
+        cd download/${{ steps.timestamp.outputs.folder }}
+        while read -r url; do
+          [ -z "$url" ] && continue
+          echo "Downloading: $url"
+          fname=$(basename "$url")
+          if curl -L --fail -o "$fname" "$url"; then
+            echo "Success: $fname"
+          else
+            echo "FAILED: $url — skipping"
+            rm -f "$fname"
           fi
+        done <<< "${{ steps.read_urls.outputs.urls }}"
 
-          echo "urls<<EOF" >> $GITHUB_OUTPUT
-          cat list.txt >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+    - name: Remove old timestamp folders
+      run: |
+        cd download
+        # Keep only the newest folder (sort by name, which works because of timestamp format)
+        newest="${{ steps.timestamp.outputs.folder }}"
+        echo "Keeping folder: $newest"
 
-      - name: Create download directory
-        run: mkdir -p downloads
+        for dir in */; do
+          d="${dir%/}"
+          if [ "$d" != "$newest" ]; then
+            echo "Removing old folder: $d"
+            rm -rf "$d"
+          fi
+        done
 
-      - name: Download each file (non-fatal)
-        run: |
-          cd downloads
-          while read -r url; do
-            [ -z "$url" ] && continue
+    - name: Commit downloaded files to repo
+      if: ${{ github.event_name == 'workflow_dispatch' }}
+      run: |
+        git config user.name "github-actions"
+        git config user.email "github-actions@github.com"
 
-            echo "Downloading: $url"
-            fname=$(basename "$url")
+        git add download
 
-            # Try download but don't fail the workflow
-            if curl -L --fail -o "$fname" "$url"; then
-              echo "Success: $fname"
-            else
-              echo "FAILED: $url — skipping"
-              rm -f "$fname"
-            fi
-          done <<< "${{ steps.read_urls.outputs.urls }}"
-
-      - name: Determine release tag (short commit hash)
-        id: tag
-        run: |
-          TAG=$(git rev-parse --short HEAD)
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-      - name: Create GitHub Release and upload assets
-        uses: aaronbarnaby/create-release-action@v1.0.0
-        with:
-          api_token: ${{ secrets.GITHUB_TOKEN }}
-          release_tag: ${{ steps.tag.outputs.tag }}
-          prerelease: false
-          title: "Auto Download ${{ steps.tag.outputs.tag }}"
-          files: downloads/*
+        if git diff --cached --quiet; then
+          echo "No changes to commit."
+        else
+          git commit -m "Add downloads for ${{ steps.timestamp.outputs.folder }}"
+          git push
+        fi
