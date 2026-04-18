@@ -1,128 +1,109 @@
-name: Download and Commit Files (No LFS)
+name: Download Files Into Repo
 
 on:
   workflow_dispatch:
 
 jobs:
-  download_and_commit:
+  download:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.ref }}
+          lfs: false
 
-      - name: Fully disable Git LFS
+      - name: Completely disable Git LFS
         run: |
           git lfs uninstall || true
-          if [ -f .gitattributes ]; then
-            rm -f .gitattributes
-            git rm --cached .gitattributes || true
-          fi
-          echo "Git LFS disabled and .gitattributes removed."
 
-      - name: Read URLs from list.txt
-        id: read_urls
+          rm -f .gitattributes || true
+
+          git config --global filter.lfs.clean ""
+          git config --global filter.lfs.smudge ""
+          git config --global filter.lfs.process ""
+          git config --global filter.lfs.required false
+
+          git config --global --unset filter.lfs.clean || true
+          git config --global --unset filter.lfs.smudge || true
+          git config --global --unset filter.lfs.process || true
+
+      - name: Generate timestamp folder
+        id: ts
         run: |
-          urls=$(grep -v '^\s*$' list.txt || true)
-          echo "urls<<EOF" >> $GITHUB_OUTPUT
-          echo "$urls" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          TS=$(date +'%Y%m%d%H%M')
+          DIR="datafiles/$TS"
+          mkdir -p "$DIR"
+          echo "dir=$DIR" >> $GITHUB_OUTPUT
 
-      - name: Generate timestamped folder
-        id: timestamp
-        run: |
-          ts=$(date +'%Y%m%d%H%M')
-          out="datafiles/$ts"
-          mkdir -p "$out"
-          echo "folder=$out" >> $GITHUB_OUTPUT
-
-      - name: Delete older timestamp folders
+      - name: Remove old folders
         run: |
           mkdir -p datafiles
           cd datafiles
+          KEEP=$(basename "${{ steps.ts.outputs.dir }}")
 
-          current="$(basename "${{ steps.timestamp.outputs.folder }}")"
-          echo "Keeping folder: $current"
-
-          find . -mindepth 1 -maxdepth 1 -type d \
-            ! -name "$current" -exec rm -rf {} +
-
-      - name: Download, Compress, Split Files (50MB, Collision‑proof)
-        run: |
-          set +e
-          target="${{ steps.timestamp.outputs.folder }}"
-          echo "[DEBUG] Target folder: $target"
-
-          if [ ! -d "$target" ]; then
-            echo "[FATAL] Target directory does NOT exist: $target"
-            exit 2
-          fi
-
-          cd "$target" || { echo "[FATAL] cd failed"; exit 2; }
-
-          echo "[DEBUG] Starting download loop..."
-          echo "${{ steps.read_urls.outputs.urls }}" | while IFS= read -r url; do
-            echo "---------------------------------------------"
-
-            if [ -z "$url" ]; then
-              echo "[SKIP] Empty line found"
-              continue
+          for d in */ ; do
+            d=${d%/}
+            if [ "$d" != "$KEEP" ]; then
+              rm -rf "$d"
             fi
-
-            echo "[INFO] Processing URL: $url"
-
-            fname="$(basename "$url")"
-            echo "[DEBUG] basename = $fname"
-
-            urlhash=$(echo -n "$url" | sha1sum | cut -c1-6)
-            base="${fname}_parts_${urlhash}"
-            echo "[DEBUG] base folder = $base"
-
-            echo "[INFO] Downloading..."
-            curl -L --fail --show-error -o "$fname" "$url"
-            rc=$?
-            if [ $rc -ne 0 ]; then
-              echo "[ERROR] curl failed (exit $rc)"
-              rm -f "$fname"
-              continue
-            fi
-
-            echo "[INFO] Creating folder $base"
-            mkdir -p "$base"
-            if [ $? -ne 0 ]; then
-              echo "[ERROR] mkdir failed → folder exists as a *file*?"
-              ls -l
-              continue
-            fi
-
-            echo "[INFO] Compressing into tar.gz..."
-            tar -czf "$base/$fname.tar.gz" "$fname"
-            rc=$?
-            if [ $rc -ne 0 ]; then
-              echo "[ERROR] tar failed (exit $rc)"
-              rm -f "$fname"
-              continue
-            fi
-
-            echo "[INFO] Splitting file..."
-            split -b 50m "$base/$fname.tar.gz" "$base/${fname}.part_"
-            rc=$?
-            if [ $rc -ne 0 ]; then
-              echo "[ERROR] split failed (exit $rc)"
-              rm -f "$base/$fname.tar.gz"
-              rm -f "$fname"
-              continue
-            fi
-
-            echo "[INFO] Cleaning intermediate files..."
-            rm -f "$base/$fname.tar.gz"
-            rm -f "$fname"
-
-            echo "[SUCCESS] Completed $fname"
           done
 
-          echo "[DEBUG] End of loop"
-          exit 0
+      - name: Download, compress and split files
+        run: |
+          TARGET="${{ steps.ts.outputs.dir }}"
+          cd "$TARGET"
+
+          while IFS= read -r url || [ -n "$url" ]; do
+
+            [ -z "$url" ] && continue
+
+            echo "Processing $url"
+
+            fname=$(basename "$url")
+            hash=$(echo -n "$url" | sha1sum | cut -c1-6)
+
+            folder="${fname}_parts_${hash}"
+            mkdir -p "$folder"
+
+            echo "Downloading..."
+            curl -L --fail -o "$fname" "$url" || continue
+
+            echo "Compressing..."
+            tar -czf "$folder/$fname.tar.gz" "$fname"
+
+            echo "Splitting..."
+            split -b 50m "$folder/$fname.tar.gz" "$folder/${fname}.part_"
+
+            rm "$fname"
+            rm "$folder/$fname.tar.gz"
+
+            echo "Done $fname"
+
+          done < ../../list.txt
+
+      - name: Verify no LFS pointers exist
+        run: |
+          if grep -r "git-lfs.github.com/spec" datafiles ; then
+            echo "ERROR: LFS pointer detected!"
+            exit 1
+          fi
+
+      - name: Commit files
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git add datafiles -f
+
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+            exit 0
+          fi
+
+          git commit -m "Add downloaded files"
+
+          git pull --rebase
+          git push
