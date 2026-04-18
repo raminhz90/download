@@ -52,52 +52,77 @@ jobs:
 
       - name: Download, Compress, Split Files (50MB, Collision‑proof)
         run: |
-          set -euo pipefail
+          set +e
           target="${{ steps.timestamp.outputs.folder }}"
-          cd "$target"
+          echo "[DEBUG] Target folder: $target"
 
+          if [ ! -d "$target" ]; then
+            echo "[FATAL] Target directory does NOT exist: $target"
+            exit 2
+          fi
+
+          cd "$target" || { echo "[FATAL] cd failed"; exit 2; }
+
+          echo "[DEBUG] Starting download loop..."
           echo "${{ steps.read_urls.outputs.urls }}" | while IFS= read -r url; do
+            echo "---------------------------------------------"
+
             if [ -z "$url" ]; then
-              echo "[SKIP] Empty line"
+              echo "[SKIP] Empty line found"
               continue
             fi
 
-            echo "---------------------------------------------"
-            echo "[INFO] Processing: $url"
+            echo "[INFO] Processing URL: $url"
 
             fname="$(basename "$url")"
+            echo "[DEBUG] basename = $fname"
+
             urlhash=$(echo -n "$url" | sha1sum | cut -c1-6)
             base="${fname}_parts_${urlhash}"
-
-            echo "[INFO] File name: $fname"
-            echo "[INFO] Output folder: $base"
+            echo "[DEBUG] base folder = $base"
 
             echo "[INFO] Downloading..."
-            if ! curl -L --fail --show-error -o "$fname" "$url"; then
-              echo "[ERROR] Failed: $url"
+            curl -L --fail --show-error -o "$fname" "$url"
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "[ERROR] curl failed (exit $rc)"
               rm -f "$fname"
               continue
             fi
 
+            echo "[INFO] Creating folder $base"
             mkdir -p "$base"
+            if [ $? -ne 0 ]; then
+              echo "[ERROR] mkdir failed → folder exists as a *file*?"
+              ls -l
+              continue
+            fi
 
-            echo "[INFO] Compressing..."
-            if ! tar -czf "$base/$fname.tar.gz" "$fname"; then
-              echo "[ERROR] Compression failed"
+            echo "[INFO] Compressing into tar.gz..."
+            tar -czf "$base/$fname.tar.gz" "$fname"
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "[ERROR] tar failed (exit $rc)"
               rm -f "$fname"
               continue
             fi
 
-            echo "[INFO] Splitting into 50MB chunks..."
-            if ! split -b 50m "$base/$fname.tar.gz" "$base/${fname}.part_"; then
-              echo "[ERROR] Split failed"
+            echo "[INFO] Splitting file..."
+            split -b 50m "$base/$fname.tar.gz" "$base/${fname}.part_"
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "[ERROR] split failed (exit $rc)"
               rm -f "$base/$fname.tar.gz"
               rm -f "$fname"
               continue
             fi
 
-            # Clean up
+            echo "[INFO] Cleaning intermediate files..."
             rm -f "$base/$fname.tar.gz"
             rm -f "$fname"
 
-            echo "[SUCCESS] Completed: $fname"
+            echo "[SUCCESS] Completed $fname"
+          done
+
+          echo "[DEBUG] End of loop"
+          exit 0
