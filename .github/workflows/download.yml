@@ -37,39 +37,59 @@ jobs:
 
     - name: Download + Compress + Split Files
       run: |
+        set -euo pipefail
         cd download/${{ steps.timestamp.outputs.folder }}
 
-        while read -r url; do
-          [ -z "$url" ] && continue
+        echo "Starting downloads..."
+        echo "${{ steps.read_urls.outputs.urls }}" | while IFS= read -r url; do
+          if [ -z "$url" ]; then
+            echo "[SKIP] Empty line in list.txt"
+            continue
+          fi
 
-          fname=$(basename "$url")
+          echo "---------------------------------------------"
+          echo "[INFO] Processing URL: $url"
+
+          fname="$(basename "$url")"
           base="${fname%.*}"
 
-          echo "Downloading $fname"
-          if curl -L --fail -o "$fname" "$url"; then
-            echo "Download ok: $fname"
-          else
-            echo "FAILED: $url"
+          echo "[INFO] Filename: $fname"
+          echo "[INFO] Base folder: $base"
+
+          # Download file
+          echo "[INFO] Downloading..."
+          if ! curl -L --fail --show-error -o "$fname" "$url"; then
+            echo "[ERROR] Download failed: $url"
             rm -f "$fname"
             continue
           fi
 
-          # Make folder for the file
+          # Create folder for the parts
           mkdir -p "$base"
 
-          echo "Compressing $fname..."
-          tar -czf "$base/$fname.tar.gz" "$fname"
+          echo "[INFO] Compressing to tar.gz..."
+          if ! tar -czf "$base/$fname.tar.gz" "$fname"; then
+            echo "[ERROR] Compression failed: $fname"
+            rm -f "$fname"
+            continue
+          fi
 
-          echo "Splitting into 50MB chunks..."
-          split -b 50m "$base/$fname.tar.gz" "$base/${fname}.part_"
+          echo "[INFO] Splitting to 50MB parts..."
+          if ! split -b 50m "$base/$fname.tar.gz" "$base/${fname}.part_"; then
+            echo "[ERROR] Split failed: $base/$fname.tar.gz"
+            rm -f "$base/$fname.tar.gz"
+            continue
+          fi
 
-          echo "Cleaning up original compressed file..."
-          rm "$base/$fname.tar.gz"
-          rm "$fname"
+          echo "[INFO] Cleaning temporary files..."
+          rm -f "$base/$fname.tar.gz"
+          rm -f "$fname"
 
-          echo "Done with: $fname"
+          echo "[SUCCESS] Finished processing $fname"
+          echo "---------------------------------------------"
 
-        done <<< "${{ steps.read_urls.outputs.urls }}"
+        done
+
 
     - name: Remove old timestamp folders
       run: |
