@@ -51,12 +51,14 @@ jobs:
           echo "[INFO] Processing URL: $url"
 
           fname="$(basename "$url")"
-          base="${fname%.*}"
+
+          # NEW: Unique folder for each file, even with duplicate filenames
+          urlhash=$(echo -n "$url" | sha1sum | cut -c1-6)
+          base="${fname}_parts_${urlhash}"
 
           echo "[INFO] Filename: $fname"
-          echo "[INFO] Base folder: $base"
+          echo "[INFO] Parts folder: $base"
 
-          # Download file
           echo "[INFO] Downloading..."
           if ! curl -L --fail --show-error -o "$fname" "$url"; then
             echo "[ERROR] Download failed: $url"
@@ -64,28 +66,29 @@ jobs:
             continue
           fi
 
-          # Create folder for the parts
+          echo "[INFO] Creating folder: $base"
           mkdir -p "$base"
 
-          echo "[INFO] Compressing to tar.gz..."
+          echo "[INFO] Compressing..."
           if ! tar -czf "$base/$fname.tar.gz" "$fname"; then
-            echo "[ERROR] Compression failed: $fname"
+            echo "[ERROR] Compression failed"
             rm -f "$fname"
             continue
           fi
 
-          echo "[INFO] Splitting to 50MB parts..."
+          echo "[INFO] Splitting into 50MB parts..."
           if ! split -b 50m "$base/$fname.tar.gz" "$base/${fname}.part_"; then
-            echo "[ERROR] Split failed: $base/$fname.tar.gz"
+            echo "[ERROR] Split failed"
             rm -f "$base/$fname.tar.gz"
+            rm -f "$fname"
             continue
           fi
 
-          echo "[INFO] Cleaning temporary files..."
+          echo "[INFO] Cleaning up..."
           rm -f "$base/$fname.tar.gz"
           rm -f "$fname"
 
-          echo "[SUCCESS] Finished processing $fname"
+          echo "[SUCCESS] Completed: $fname"
           echo "---------------------------------------------"
 
         done
