@@ -12,6 +12,8 @@ jobs:
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+        ref: ${{ github.ref }}
 
     - name: Read list.txt into output
       id: read_urls
@@ -28,6 +30,7 @@ jobs:
       id: timestamp
       run: |
         TS=$(date -u +"%Y%m%d%H%M")
+        echo "Using timestamp: $TS"
         echo "folder=$TS" >> $GITHUB_OUTPUT
 
     - name: Create dynamic download directory
@@ -52,14 +55,13 @@ jobs:
     - name: Remove old timestamp folders
       run: |
         cd download
-        # Keep only the newest folder (sort by name, which works because of timestamp format)
         newest="${{ steps.timestamp.outputs.folder }}"
-        echo "Keeping folder: $newest"
+        echo "Keeping only: $newest"
 
         for dir in */; do
           d="${dir%/}"
           if [ "$d" != "$newest" ]; then
-            echo "Removing old folder: $d"
+            echo "Deleting old folder: $d"
             rm -rf "$d"
           fi
         done
@@ -67,14 +69,27 @@ jobs:
     - name: Commit downloaded files to repo
       if: ${{ github.event_name == 'workflow_dispatch' }}
       run: |
+        set -e
+
+        echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
+
         git config user.name "github-actions"
         git config user.email "github-actions@github.com"
+
+        echo "Changed files:"
+        git status --short || true
 
         git add download
 
         if git diff --cached --quiet; then
           echo "No changes to commit."
-        else
-          git commit -m "Add downloads for ${{ steps.timestamp.outputs.folder }}"
-          git push
+          exit 0
         fi
+
+        # Stay up to date before pushing
+        git pull --rebase --autostash
+
+        git commit -m "Add downloads for ${{ steps.timestamp.outputs.folder }}"
+
+        echo "Pushing changes..."
+        git push
