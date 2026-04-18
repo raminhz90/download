@@ -1,4 +1,4 @@
-name: Download Files Into Repo (Non‑LFS, ZIP‑Safe)
+name: Download Files Into Repo (Non‑LFS, RAR-Safe)
 
 on:
   workflow_dispatch:
@@ -64,10 +64,18 @@ jobs:
         done
 
     # --------------------------------------------------------
-    # DOWNLOAD + COMPRESS + SPLIT
+    # INSTALL RAR UTILITY
+    # --------------------------------------------------------
+    - name: Install rar utility
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y rar
+
+    # --------------------------------------------------------
+    # DOWNLOAD, COMPRESS, AND SPLIT USING RAR
     # WITH WINDOWS-SAFE FILENAMES
     # --------------------------------------------------------
-    - name: Download, compress and split files
+    - name: Download, compress, and split files with RAR
       run: |
         TARGET="${{ steps.ts.outputs.dir }}"
         cd "$TARGET"
@@ -95,14 +103,10 @@ jobs:
           echo "Downloading..."
           curl -L --fail -o "$fname" "$url" || continue
 
-          echo "Compressing..."
-          tar -czf "$folder/$fname.tar.gz" "$fname"
-
-          echo "Splitting..."
-          split -b 50m "$folder/$fname.tar.gz" "$folder/${fname}.part_"
+          echo "Compressing with RAR..."
+          rar a -v50m "$folder/$fname.rar" "$fname"
 
           rm "$fname"
-          rm "$folder/$fname.tar.gz"
 
           echo "Done $fname"
 
@@ -119,15 +123,18 @@ jobs:
         fi
 
     # --------------------------------------------------------
-    # COMMIT & PUSH (correct order: pull FIRST)
+    # CREATE NEW BRANCH, COMMIT & PUSH
     # --------------------------------------------------------
-    - name: Commit and push changes
+    - name: Create new branch and commit changes
       run: |
+        # Generate a unique branch name
+        BRANCH_NAME="files-$(date +'%Y%m%d%H%M%S')"
+        
+        # Checkout to a new branch
+        git checkout -b $BRANCH_NAME
+        
         git config user.name "github-actions"
         git config user.email "actions@github.com"
-
-        # Pull FIRST, avoid rebase errors
-        git pull --rebase --autostash
 
         # Add all generated files
         git add datafiles -f
@@ -137,6 +144,8 @@ jobs:
           exit 0
         fi
 
-        git commit -m "Add downloaded files"
+        # Commit the changes
+        git commit -m "Add downloaded files to branch $BRANCH_NAME"
 
-        git push
+        # Push the branch to the remote
+        git push origin $BRANCH_NAME
