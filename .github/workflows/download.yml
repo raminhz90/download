@@ -1,4 +1,4 @@
-name: Download Files and Commit
+name: Download Files and Commit (LFS)
 
 on:
   workflow_dispatch:
@@ -14,6 +14,12 @@ jobs:
         token: ${{ secrets.GITHUB_TOKEN }}
         fetch-depth: 0
         ref: ${{ github.ref }}
+
+    - name: Install Git LFS
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git-lfs
+        git lfs install
 
     - name: Read list.txt into output
       id: read_urls
@@ -66,18 +72,21 @@ jobs:
           fi
         done
 
+    - name: Track downloads with Git LFS
+      run: |
+        git lfs track "download/**"
+        echo "Updated .gitattributes:"
+        cat .gitattributes || true
+        git add .gitattributes
+
     - name: Commit downloaded files to repo
       if: ${{ github.event_name == 'workflow_dispatch' }}
       run: |
         set -e
-
-        echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
-
         git config user.name "github-actions"
         git config user.email "github-actions@github.com"
 
-        echo "Changed files:"
-        git status --short || true
+        echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
 
         git add download
 
@@ -86,10 +95,7 @@ jobs:
           exit 0
         fi
 
-        # Stay up to date before pushing
         git pull --rebase --autostash
 
-        git commit -m "Add downloads for ${{ steps.timestamp.outputs.folder }}"
-
-        echo "Pushing changes..."
+        git commit -m "Add downloads for ${{ steps.timestamp.outputs.folder }} (via Git LFS)"
         git push
